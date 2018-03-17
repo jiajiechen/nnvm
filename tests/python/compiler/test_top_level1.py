@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import tvm
 from tvm.contrib import graph_runtime
@@ -8,7 +9,7 @@ from nnvm.testing.config import ctx_list
 
 
 def helper(symbol, inputs, dtype,
-           np_forward, np_backward=None):
+           np_forward, np_backward=None, **kwargs):
     ishapes = {}
     input_syms = []
     np_inputs = {}
@@ -18,11 +19,15 @@ def helper(symbol, inputs, dtype,
         if len(v) > 1:
             input_syms.append(v[1])
 
+    # put additional kwargs for np forward
+    np_inputs_with_addtional_args = copy.copy(np_inputs)
+    np_inputs_with_addtional_args.update(**kwargs)
+
     for target, ctx in ctx_list():
         graph, lib, _ = nnvm.compiler.build(symbol, target, ishapes)
         m = graph_runtime.create(graph, lib, ctx)
         m.run(**np_inputs)
-        y_np = np_forward(**np_inputs)
+        y_np = np_forward(**np_inputs_with_addtional_args)
         out = m.get_output(0, tvm.nd.empty(y_np.shape, dtype))
         np.testing.assert_allclose(out.asnumpy(), y_np, atol=1e-5, rtol=1e-5)
 
@@ -37,7 +42,7 @@ def helper(symbol, inputs, dtype,
             graph, lib, _ = nnvm.compiler.build(graph, target, ishapes)
             m = graph_runtime.create(graph, lib, ctx)
             head_grads = np.random.uniform(size=y_np.shape).astype(dtype)
-            y_np = head_grads * np_backward(**np_inputs)
+            y_np = head_grads * np_backward(**np_inputs_with_addtional_args)
             m.run(head_grads=head_grads, **np_inputs)
             out = m.get_output(0, tvm.nd.empty(y_np.shape, dtype))
 
@@ -308,6 +313,40 @@ def test_pad():
     helper(y, inputs, dtype, forward)
 
 
+def test_matmul():
+    lhs = sym.Variable('lhs')
+    rhs = sym.Variable('rhs')
+    result = sym.matmul(lhs, rhs)
+
+    def forward(lhs, rhs, transpose_a=False, transpose_b=False):
+        if transpose_a:
+            lhs = lhs.T
+        if transpose_b:
+            rhs = rhs.T
+        return np.matmul(lhs, rhs)
+
+    dtype = "float32"
+    inputs = {
+        'lhs': ((1, 3), lhs),
+        'rhs': ((3, 4), rhs),
+
+    }
+    helper(result, inputs, dtype, forward)
+
+    # with transpose
+    lhs = sym.Variable('lhs')
+    rhs = sym.Variable('rhs')
+    result = sym.matmul(lhs, rhs, transpose_a=False, transpose_b=True)
+
+    dtype = "float32"
+    inputs = {
+        'lhs': ((1, 3), lhs),
+        'rhs': ((4, 3), rhs),
+    }
+
+    helper(result, inputs, dtype, forward, transpose_b=True)
+
+
 if __name__ == "__main__":
     test_split()
     test_concatenate()
@@ -324,3 +363,4 @@ if __name__ == "__main__":
     test_softmax()
     test_squeeze()
     test_pad()
+    test_matmul()
